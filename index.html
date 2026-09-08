@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>img2braille — 画像→点字アスキーアート変換</title>
+<meta name="description" content="ブラウザだけで画像をUnicode点字パターン（U+2800〜U+28FF）のアスキーアートに変換。GitHub Pages対応・サーバ送信なし。">
+<style>
+:root { color-scheme: light dark; --bd: #8885; --bg: #f6f6f6; --card: #fff; }
+@media (prefers-color-scheme: dark) { :root { --bg: #141417; --card: #1d1d21; } }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; background: var(--bg); line-height: 1.6; }
+main { margin: 0 auto; padding: 24px clamp(12px, 3vw, 48px) 64px; }
+h1 { font-size: 1.6rem; margin: 0 0 4px; }
+.sub { color: gray; margin: 0 0 20px; font-size: .9rem; }
+.card { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+#drop { border: 2px dashed var(--bd); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer; }
+#drop.over { border-color: #2f81f7; background: #2f81f711; }
+#drop input { display: none; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 16px; margin-top: 12px; }
+label.ctl { display: block; font-size: .85rem; }
+label.ctl output { float: right; font-variant-numeric: tabular-nums; }
+input[type=number] { width: 6em; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--bd); background: #2f81f7; color: #fff; cursor: pointer; font-size: .9rem; }
+button.ghost { background: transparent; color: inherit; }
+button:disabled { opacity: .4; cursor: default; }
+#msg { min-height: 1.6em; font-size: .85rem; color: #2f81f7; }
+#preview { max-width: 240px; max-height: 160px; display: none; margin-top: 8px; border: 1px solid var(--bd); }
+#outcard { padding: 16px clamp(12px, 2.5vw, 40px); }
+#out, #meta { max-width: 2400px; margin-left: auto; margin-right: auto; user-select: all; }
+#out { white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; font-size: 11px; line-height: 1.15; letter-spacing: 0; margin: 0; }
+#meta { font-size: .8rem; color: gray; margin-top: 8px; }
+#viewer { position: fixed; inset: 0; display: none; z-index: 50; background: #0b0b0d; color: #eee; }
+#vwrap { height: 100%; display: flex; flex-direction: column; }
+#vbar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #8885; font-size: .85rem; }
+#vbar .sp { flex: 1; }
+#vmeta { color: #aaa; font-size: .8rem; }
+#vout { flex: 1; overflow: auto; margin: 0; padding: 12px 16px; white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; line-height: 1.15; letter-spacing: 0; user-select: all; }
+#vbar button { padding: 6px 12px; }
+footer { font-size: .8rem; color: gray; }
+code { font-size: .85em; }
+</style>
+</head>
+<body>
+<main>
+<h1>img2braille</h1>
+<p class="sub">画像 → Unicode点字（U+2800〜U+28FF）アスキーアート。完全クライアント動作・画像は外部送信されません。</p>
+
+<div class="card" id="drop" role="button" tabindex="0" aria-label="画像ファイルをドロップ、貼り付け、または選択">
+  <div><strong>画像をドロップ / クリックで選択 / ペースト（Ctrl+V）</strong></div>
+  <div class="sub">PNG・JPEG・GIF・WebP・BMP・SVG 対応（処理は端末内のみ）</div>
+  <input type="file" id="file" accept="image/*">
+</div>
+
+<div class="card">
+  <div class="grid">
+    <label class="ctl">幅（文字数）<output id="oW">70</output>
+      <input type="range" id="pW" min="10" max="600" value="70">
+      <input type="number" id="pWn" min="1" value="70" aria-label="幅を数値で指定（上限なし）"></label>
+    <label class="ctl">明るさ<output id="oB">0</output>
+      <input type="range" id="pB" min="-100" max="100" value="0"></label>
+    <label class="ctl">コントラスト<output id="oC">0</output>
+      <input type="range" id="pC" min="-100" max="100" value="0"></label>
+    <label class="ctl">ガンマ<output id="oG">1.00</output>
+      <input type="range" id="pG" min="20" max="300" value="100"></label>
+    <label class="ctl">縦横比補正<output id="oA">1.00</output>
+      <input type="range" id="pA" min="50" max="200" value="100"></label>
+    <label class="ctl">ディザ
+      <select id="pD">
+        <option value="fs" selected>Floyd–Steinberg（写真向け）</option>
+        <option value="atkinson">Atkinson（コントラスト強め）</option>
+        <option value="none">なし（直接8階調）</option>
+      </select></label>
+    <label class="ctl" style="align-self:end"><input type="checkbox" id="pI"> 白黒反転</label>
+    <label class="ctl">表示サイズ<output id="oF">自動</output>
+      <input type="range" id="pF" min="1.5" max="200" step="0.5" value="11"></label>
+    <label class="ctl" style="align-self:end"><input type="checkbox" id="pFA" checked> サイズ自動調整</label>
+  </div>
+  <div class="row">
+    <button id="bReset" class="ghost">リセット</button>
+    <button id="bCopy" disabled>コピー</button>
+    <button id="bDl" class="ghost" disabled>TXTで保存</button>
+    <button id="bFull" class="ghost" disabled>全画面で見る</button>
+    <button id="bSample" class="ghost">サンプル画像で試す</button>
+    <span id="msg" role="status"></span>
+  </div>
+  <img id="preview" alt="入力画像プレビュー">
+</div>
+
+<div class="card" id="outcard">
+  <pre id="out" aria-label="点字アスキーアート出力">画像を入力してください</pre>
+  <div id="meta"></div>
+</div>
+<div id="viewer" role="dialog" aria-label="点字アスキーアート全画面プレビュー">
+  <div id="vwrap">
+    <div id="vbar">
+      <strong>プレビュー</strong>
+      <span id="vmeta"></span>
+      <span class="sp"></span>
+      <button id="bVCopy" class="ghost">コピー</button>
+      <button id="bVClose" class="ghost">閉じる（Esc）</button>
+    </div>
+    <pre id="vout" aria-label="点字アスキーアート全画面表示"></pre>
+  </div>
+</div>
+
+<footer>
+  仕様: 1文字 = 2×4ドット → U+2800 + ビット（左列上から dots 1/2/3/7、右列上から dots 4/5/6/8）。全セル1〜8ドットで濃度表現（空セルU+2800不使用）。
+  高さ = 幅 × 画像縦横比 × セル比 × 補正。詳細は <code>REQUIREMENTS.md</code>。
+</footer>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = { file: $("file"), drop: $("drop"), out: $("out"), meta: $("meta"), msg: $("msg"),
+  preview: $("preview"), bCopy: $("bCopy"), bDl: $("bDl"), bSample: $("bSample"),
+  bReset: $("bReset"), bFull: $("bFull"), viewer: $("viewer"), vout: $("vout"), vmeta: $("vmeta"),
+  bVClose: $("bVClose"), bVCopy: $("bVCopy"),
+  pW: $("pW"), pWn: $("pWn"), pB: $("pB"), pC: $("pC"), pG: $("pG"), pA: $("pA"), pD: $("pD"), pI: $("pI"), pF: $("pF"), pFA: $("pFA") };
+let srcBitmap = null, srcURL = null, lastText = "";
+
+const DEFAULTS = { pW: 70, pWn: 70, pB: 0, pC: 0, pG: 100, pA: 100, pD: "fs", pI: false, pF: 11, pFA: true };
+const darkMQ = matchMedia("(prefers-color-scheme: dark)");
+DEFAULTS.pI = darkMQ.matches;
+let invertTouched = false;
+function applyThemeInvert() {
+  if (invertTouched) return;
+  els.pI.checked = darkMQ.matches;
+}
+const fitCtx = document.createElement("canvas").getContext("2d");
+
+// ---- image loading ----
+function loadViaElement(url) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error("decode"));
+    im.src = url;
+  });
+}
+function srcSize(s) {
+  return { w: s.naturalWidth || s.width, h: s.naturalHeight || s.height };
+}
+function looksImage(f) {
+  if (f.type) return f.type.startsWith("image/");
+  return /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(f.name || "");
+}
+async function loadFile(file) {
+  if (!file) return;
+  if (!looksImage(file)) return say("画像ファイルではありません");
+  say("読み込み中…");
+  try {
+    if ("createImageBitmap" in window) {
+      try { srcBitmap = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+      catch { srcBitmap = await createImageBitmap(file); }
+    } else {
+      if (srcURL) URL.revokeObjectURL(srcURL);
+      srcURL = URL.createObjectURL(file);
+      srcBitmap = await loadViaElement(srcURL);
+    }
+  } catch {
+    try {
+      if (srcURL) URL.revokeObjectURL(srcURL);
+      srcURL = URL.createObjectURL(file);
+      srcBitmap = await loadViaElement(srcURL);
+    } catch { return say("画像を読み込めませんでした"); }
+  }
+  const { w, h } = srcSize(srcBitmap);
+  if (!w || !h) return say("画像を読み込めませんでした");
+  if (srcURL) URL.revokeObjectURL(srcURL);
+  srcURL = URL.createObjectURL(file);
+  els.preview.src = srcURL;
+  els.preview.style.display = "block";
+  convert();
+}
+function bitmapURL(bm) {
+  const { w, h } = srcSize(bm);
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(bm, 0, 0);
+  return new Promise(r => c.toBlob(b => r(URL.createObjectURL(b))));
+}
+
+// ---- core conversion: image -> braille text (tiled, async, memory-guarded) ----
+let convertToken = 0;
+async function convert() {
+  if (!srcBitmap) return;
+  const my = ++convertToken;
+  const alive = () => my === convertToken;
+  let W = Math.floor(+els.pWn.value || +els.pW.value || 70);
+  if (!(W >= 1)) W = 1;
+  const notes = [];
+  const bri = +els.pB.value / 100, con = +els.pC.value;
+  const gam = +els.pG.value / 100, asp = +els.pA.value / 100;
+  const { w: iw, h: ih } = srcSize(srcBitmap);
+  // memory guard: cap total text cells by uniform shrink (keeps aspect ratio)
+  const MAX_CELLS = 4000000; // 4M chars ~= 8MB text
+  let H = Math.max(5, Math.round(W * ih / iw * cellRatio() * asp));
+  if (W * H > MAX_CELLS) {
+    const k = Math.sqrt(MAX_CELLS / (W * H));
+    W = Math.max(1, Math.floor(W * k));
+    H = Math.max(5, Math.floor(MAX_CELLS / W));
+    notes.push("メモリ保護のため縦横比を保ったまま" + W + "×" + H + "に縮小しました（全" + (W * H) + "文字）");
+  }
+  // number input keeps the requested value; gauge + label follow actual W
+  syncOutputs(W);
+  const dw = W * 2, dh = H * 4;
+  // tile the source raster so no giant canvas/buffer is ever needed
+  // (tile seams differ by <1px of smoothing vs single-pass: visually negligible)
+  const TW = 128, TH = 64; // tile size in cells
+  const ntx = Math.ceil(W / TW), nty = Math.ceil(H / TH);
+  const total = ntx * nty;
+  const bcv = document.createElement("canvas");
+  const bcx = bcv.getContext("2d", { willReadFrequently: true });
+  const c255 = con * 2.55, cf = (259 * (c255 + 255)) / (255 * (259 - c255));
+  const inv = els.pI.checked;
+  const dark = new Float32Array(W * H);
+  try {
+    let done = 0;
+    for (let ty = 0; ty < nty; ty++) {
+      for (let tx = 0; tx < ntx; tx++) {
+        if (!alive()) return;
+        const x0 = tx * TW, y0 = ty * TH;
+        const tw = Math.min(TW, W - x0), th = Math.min(TH, H - y0);
+        const pxw = tw * 2, pxh = th * 4;
+        bcv.width = pxw; bcv.height = pxh;
+        bcx.fillStyle = "#fff"; bcx.fillRect(0, 0, pxw, pxh); // 透明は白合成
+        bcx.imageSmoothingEnabled = true; bcx.imageSmoothingQuality = "high";
+        bcx.drawImage(srcBitmap, x0 / W * iw, y0 / H * ih, tw / W * iw, th / H * ih, 0, 0, pxw, pxh);
+        const px = bcx.getImageData(0, 0, pxw, pxh).data;
+        for (let r = 0; r < th; r++) {
+          const cy = y0 + r;
+          for (let cxi = 0; cxi < tw; cxi++) {
+            const cx = x0 + cxi;
+            let s = 0;
+            const xx = cxi * 2, yy = r * 4;
+            for (let dy = 0; dy < 4; dy++) {
+              const off = ((yy + dy) * pxw + xx) * 4;
+              s += 0.299 * px[off] + 0.587 * px[off + 1] + 0.114 * px[off + 2];
+            }
+            let v = cf * (s / 8 / 255 - 0.5) + 0.5 + bri; // contrast + brightness
+            v = v < 0 ? 0 : v > 1 ? 1 : v;
+            v = Math.pow(v, gam);                         // gamma
+            if (inv) v = 1 - v;                           // invert
+            dark[cy * W + cx] = 1 - v;
+          }
+        }
+        done++;
+        if (total > 4) say("変換中… " + Math.round(done / total * 80) + "%（" + W + "×" + H + "）");
+        await new Promise(res => setTimeout(res, 0));
+      }
+    }
+  } catch (e) {
+    return say("変換に失敗しました（メモリ不足の可能性）");
+  }
+  if (!alive()) return;
+  if (W * H > 200000) say("仕上げ中…");
+
+  // quantize cell darkness to 1..8 dots (error diffusion on the cell grid)
+  const mode = els.pD.value;
+  const level = new Uint8Array(W * H);
+  if (mode === "none") {
+    for (let i = 0; i < level.length; i++) {
+      level[i] = 1 + Math.min(7, Math.max(0, Math.round(dark[i] * 7)));
+      if ((i & 0x7ffff) === 0x7ffff && !alive()) return;
+    }
+  } else {
+    const ker = mode === "atkinson"
+      ? [[1,0,1/8],[2,0,1/8],[-1,1,1/8],[0,1,1/8],[1,1,1/8],[0,2,1/8]]
+      : [[1,0,7/16],[-1,1,3/16],[0,1,5/16],[1,1,1/16]];
+    const at = (x, y) => y * W + x;
+    for (let y = 0; y < H; y++) {
+      const ltr = y % 2 === 0;
+      for (let k = 0; k < W; k++) {
+        const x = ltr ? k : W - 1 - k;
+        const i = at(x, y), d = dark[i];
+        const lv = 1 + Math.min(7, Math.max(0, Math.round(d * 7)));
+        level[i] = lv;
+        const err = d - (lv - 1) / 7;
+        for (const [dx0, dy, f] of ker) {
+          const dx = ltr ? dx0 : -dx0, nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < W && ny < H) dark[at(nx, ny)] += err * f;
+        }
+      }
+      if ((y & 255) === 255 && !alive()) return;
+    }
+  }
+  if (!alive()) return;
+
+  // 2x4 dots -> U+2800 block. bit order: (0,0)=0x01,(1,0)=0x08,(0,1)=0x02,(1,1)=0x10,(0,2)=0x04,(1,2)=0x20,(0,3)=0x40,(1,3)=0x80
+  // dots grow outward from the two middle rows so sparse cells stay faint
+  // and every cell keeps full advance width (all dotted chars share it)
+  const BITS = [0x01,0x08, 0x02,0x10, 0x04,0x20, 0x40,0x80];
+  const ORDER = [2,3,4,5,0,1,6,7];
+  const lines = [];
+  for (let cy = 0; cy < H; cy++) {
+    let s = "";
+    for (let cx = 0; cx < W; cx++) {
+      const n = level[cy * W + cx];
+      let b = 0;
+      for (let o = 0; o < n; o++) b |= BITS[ORDER[o]];
+      s += String.fromCharCode(0x2800 + b);
+    }
+    lines.push(s);
+    if ((cy & 511) === 511 && !alive()) return;
+  }
+  if (!alive()) return;
+  lastText = lines.join("\n");
+  els.out.textContent = lastText;
+  if (els.viewer.style.display === "block") { els.vout.textContent = lastText; fitViewer(); }
+  fitFont();
+  const fs = parseFloat(getComputedStyle(els.out).fontSize) || 11;
+  const nChar = lastText.replace(/\n/g, "").length;
+  els.meta.textContent = W + "×" + H + "文字（" + dw + "×" + dh + "ドット）・全セル1〜8ドット(U+2800不使用)・" + lines.length + "行 " + nChar + "字・表示" + String(fs).replace(/\.0$/, "") + "px";
+  els.bCopy.disabled = els.bDl.disabled = els.bFull.disabled = false;
+  say(notes.length ? notes.join("。") : "");
+}
+// max columns that stay resolvable on this screen (recomputed on load/resize)
+function screenMaxW() {
+  try {
+    const cs = getComputedStyle(els.out);
+    fitCtx.font = `100px ${cs.fontFamily}`;
+    const advEm = fitCtx.measureText("⣿").width / 100 || 0.75;
+    const w = els.out.clientWidth || document.documentElement.clientWidth;
+    return Math.max(10, Math.floor((w - 2) / (1.5 * advEm)));
+  } catch { return 100000; }
+}
+function refreshScreenCap() {
+  const cap = screenMaxW();
+  els.pW.max = cap;
+  els.pW.title = "上限 " + cap + "（画面幅連動）";
+  const w = Math.floor(+els.pWn.value || +els.pW.value || 70);
+  els.pW.value = Math.min(cap, Math.max(10, w));
+}
+function cellRatio() {
+  try {
+    const cs = getComputedStyle(els.out);
+    const fs = parseFloat(cs.fontSize) || 11;
+    fitCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${fs}px ${cs.fontFamily}`;
+    const adv = fitCtx.measureText("⣿").width;
+    let lh = parseFloat(cs.lineHeight);
+    if (!isFinite(lh) || lh <= 0) lh = fs * 1.15;
+    if (adv > 0 && lh > 0) return Math.min(1, Math.max(0.3, adv / lh));
+  } catch {}
+  return 0.5;
+}
+
+// ---- sample image ----
+async function sample() {
+  const c = document.createElement("canvas");
+  c.width = 280; c.height = 200;
+  const x = c.getContext("2d");
+  const gr = x.createLinearGradient(0, 0, 280, 0);
+  gr.addColorStop(0, "#000"); gr.addColorStop(1, "#fff");
+  x.fillStyle = gr; x.fillRect(0, 0, 280, 200);
+  x.fillStyle = "#fff"; x.beginPath(); x.arc(90, 100, 55, 0, 7); x.fill();
+  x.fillStyle = "#000"; x.beginPath(); x.arc(190, 100, 55, 0, 7); x.fill();
+  x.fillStyle = "#888"; x.font = "bold 44px sans-serif";
+  x.fillText("あA1", 95, 150);
+  srcBitmap = await createImageBitmap(c);
+  els.preview.src = await bitmapURL(srcBitmap);
+  els.preview.style.display = "block";
+  convert();
+}
+
+// ---- reset ----
+function resetParams() {
+  els.pW.value = Math.min(+els.pW.max || 600, Math.max(10, DEFAULTS.pW)); els.pWn.value = DEFAULTS.pWn;
+  els.pB.value = DEFAULTS.pB; els.pC.value = DEFAULTS.pC;
+  els.pG.value = DEFAULTS.pG; els.pA.value = DEFAULTS.pA;
+  els.pD.value = DEFAULTS.pD;
+  invertTouched = false;
+  applyThemeInvert();
+  els.pF.value = DEFAULTS.pF; els.pFA.checked = DEFAULTS.pFA;
+  syncOutputs(); convert();
+  say("初期値に戻しました");
+}
+function fitFont() {
+  if (!els.pFA.checked) {
+    els.out.style.fontSize = els.pF.value + "px";
+    return;
+  }
+  if (!srcBitmap || !lastText) return;
+  const first = lastText.split("\n")[0];
+  if (!first) return;
+  const cs = getComputedStyle(els.out);
+  const cur = parseFloat(cs.fontSize) || 11;
+  // fit width only; the block itself never scrolls (overflow visible),
+  // tall outputs keep growing the page so nothing is ever clipped
+  const availW = els.out.clientWidth - 2;
+  if (availW <= 0) return;
+  fitCtx.font = `100px ${cs.fontFamily}`;
+  const advEm = fitCtx.measureText("⣿").width / 100 || 0.75;
+  const W = [...first].length;
+  let next = availW / (W * advEm);
+  if (!isFinite(next) || next <= 0) return;
+  next = Math.min(200, Math.max(1.5, Math.floor(next * 2) / 2));
+  els.out.style.fontSize = next + "px";
+  els.pF.value = Math.round(next);
+  els.out.style.overflow = "visible";
+}
+// ---- fullscreen viewer (screen-fit) ----
+function openViewer() {
+  if (!lastText) return;
+  els.viewer.style.display = "block";
+  document.body.style.overflow = "hidden";
+  els.vout.textContent = lastText;
+  fitViewer();
+}
+function closeViewer() {
+  els.viewer.style.display = "none";
+  document.body.style.overflow = "";
+}
+function fitViewer() {
+  if (!lastText || els.viewer.style.display !== "block") return;
+  const firstLine = lastText.split("\n")[0] || "";
+  const W = [...firstLine].length, H = lastText.split("\n").length;
+  const cs = getComputedStyle(els.vout);
+  const cur = parseFloat(cs.fontSize) || 11;
+  fitCtx.font = `100px ${cs.fontFamily}`;
+  let advEm = fitCtx.measureText("⣿").width / 100;
+  if (!(advEm > 0)) advEm = 0.75;
+  const lhPx = parseFloat(cs.lineHeight);
+  const lhEm = (isFinite(lhPx) && lhPx > 0) ? lhPx / cur : 1.15;
+  const availW = els.vout.clientWidth - 32;
+  const availH = els.vout.clientHeight - 24;
+  if (availW <= 0 || availH <= 0) return;
+  let fs = Math.min(availW / (W * advEm), availH / (H * lhEm));
+  if (!isFinite(fs) || fs <= 0) return;
+  fs = Math.min(200, Math.max(1.5, Math.floor(fs * 2) / 2));
+  els.vout.style.fontSize = fs + "px";
+  els.vmeta.textContent = `${W}×${H}文字・表示${String(fs).replace(/\.0$/, "")}px（画面フィット）`;
+}
+// ---- ui wiring ----
+function say(t) { els.msg.textContent = t; }
+function syncOutputs(w) {
+  const raw = Math.floor(+els.pWn.value || +els.pW.value || 70);
+  const wn = raw >= 1 ? raw : 1;
+  const W = (w >= 1) ? Math.floor(w) : wn;
+  const cap = +els.pW.max || 600;
+  els.pW.value = Math.min(cap, Math.max(10, W));
+  $("oW").textContent = W;
+  $("oB").textContent = els.pB.value; $("oC").textContent = els.pC.value;
+  $("oG").textContent = (+els.pG.value/100).toFixed(2);
+  $("oA").textContent = (+els.pA.value/100).toFixed(2);
+  $("oF").textContent = els.pFA.checked ? "自動" : els.pF.value + "px";
+}
+for (const k of ["pW","pB","pC","pG","pA"])
+  els[k].addEventListener("input", () => { if (k === "pW") els.pWn.value = els.pW.value; syncOutputs(); convert(); });
+els.pWn.addEventListener("change", () => { syncOutputs(); convert(); });
+for (const k of ["pD","pI"])
+  for (const ev of ["input","change"])
+    els[k].addEventListener(ev, () => { syncOutputs(); convert(); });
+els.pI.addEventListener("change", () => { invertTouched = true; });
+if (typeof darkMQ.addEventListener === "function")
+  darkMQ.addEventListener("change", () => { applyThemeInvert(); syncOutputs(); convert(); });
+els.pF.addEventListener("input", () => { els.pFA.checked = false; fitFont(); syncOutputs(); });
+for (const ev of ["input", "change"])
+  els.pFA.addEventListener(ev, () => { fitFont(); syncOutputs(); });
+window.addEventListener("resize", () => { refreshScreenCap(); fitFont(); fitViewer(); });
+els.drop.addEventListener("click", () => els.file.click());
+els.drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") els.file.click(); });
+els.file.addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; loadFile(f); });
+for (const ev of ["dragover","dragenter"]) els.drop.addEventListener(ev, e => { e.preventDefault(); els.drop.classList.add("over"); });
+for (const ev of ["dragleave","drop"]) els.drop.addEventListener(ev, e => { e.preventDefault(); els.drop.classList.remove("over"); });
+els.drop.addEventListener("drop", e => loadFile(e.dataTransfer.files[0]));
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+document.addEventListener("paste", e => {
+  const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith("image/"));
+  if (f) loadFile(f);
+});
+els.bSample.addEventListener("click", sample);
+els.bFull.addEventListener("click", openViewer);
+els.bVClose.addEventListener("click", closeViewer);
+els.bVCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(lastText);
+    els.bVCopy.textContent = "コピー済み";
+    setTimeout(() => els.bVCopy.textContent = "コピー", 1500);
+  } catch { els.bCopy.click(); }
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && els.viewer.style.display === "block") closeViewer();
+});
+els.bReset.addEventListener("click", resetParams);
+els.bCopy.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(lastText); say("コピーしました"); }
+  catch {
+    const ta = document.createElement("textarea");
+    ta.value = lastText; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove(); say("コピーしました");
+  }
+});
+els.bDl.addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lastText], { type: "text/plain;charset=utf-8" }));
+  a.download = "braille.txt"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+refreshScreenCap();
+applyThemeInvert();
+syncOutputs();
+</script>
+</body>
+</html>
