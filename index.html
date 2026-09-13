@@ -29,14 +29,14 @@ button:disabled { opacity: .4; cursor: default; }
 #preview { max-width: 240px; max-height: 160px; display: none; margin-top: 8px; border: 1px solid var(--bd); }
 #outcard { padding: 16px clamp(12px, 2.5vw, 40px); }
 #out, #meta { max-width: 2400px; margin-left: auto; margin-right: auto; user-select: all; }
-#out { white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; font-size: 11px; line-height: 1.15; letter-spacing: 0; margin: 0; }
+#out { white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; font-size: 11px; line-height: var(--ph, 1.15); letter-spacing: 0; margin: 0; }
 #meta { font-size: .8rem; color: gray; margin-top: 8px; }
 #viewer { position: fixed; inset: 0; display: none; z-index: 50; background: #0b0b0d; color: #eee; }
 #vwrap { height: 100%; display: flex; flex-direction: column; }
 #vbar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #8885; font-size: .85rem; }
 #vbar .sp { flex: 1; }
 #vmeta { color: #aaa; font-size: .8rem; }
-#vout { flex: 1; overflow: auto; margin: 0; padding: 12px 16px; white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; line-height: 1.15; letter-spacing: 0; user-select: all; }
+#vout { flex: 1; overflow: auto; margin: 0; padding: 12px 16px; white-space: pre; font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", Menlo, Consolas, monospace; line-height: var(--ph, 1.15); letter-spacing: 0; user-select: all; }
 #vbar button { padding: 6px 12px; }
 footer { font-size: .8rem; color: gray; }
 code { font-size: .85em; }
@@ -66,6 +66,11 @@ code { font-size: .85em; }
       <input type="range" id="pG" min="20" max="300" value="100"></label>
     <label class="ctl">縦横比補正<output id="oA">1.00</output>
       <input type="range" id="pA" min="50" max="200" value="100"></label>
+    <label class="ctl">出力先のセル比
+      <select id="pT">
+        <option value="auto" selected>この画面のフォント（既定）</option>
+        <option value="github">GitHub コードブロック</option>
+      </select></label>
     <label class="ctl">ディザ
       <select id="pD">
         <option value="fs" selected>Floyd–Steinberg（写真向け）</option>
@@ -107,7 +112,7 @@ code { font-size: .85em; }
 
 <footer>
   仕様: 1文字 = 2×4ドット → U+2800 + ビット（左列上から dots 1/2/3/7、右列上から dots 4/5/6/8）。全セル1〜8ドットで濃度表現（空セルU+2800不使用）。
-  高さ = 幅 × 画像縦横比 × セル比 × 補正。詳細は <code>REQUIREMENTS.md</code>。
+  高さ = 幅 × 画像縦横比 × セル比 × 補正（セル比は「出力先」で GitHub=0.5196 / この画面=実測）。詳細は <code>REQUIREMENTS.md</code>。
 </footer>
 </main>
 
@@ -118,10 +123,13 @@ const els = { file: $("file"), drop: $("drop"), out: $("out"), meta: $("meta"), 
   preview: $("preview"), bCopy: $("bCopy"), bDl: $("bDl"), bSample: $("bSample"),
   bReset: $("bReset"), bFull: $("bFull"), viewer: $("viewer"), vout: $("vout"), vmeta: $("vmeta"),
   bVClose: $("bVClose"), bVCopy: $("bVCopy"),
-  pW: $("pW"), pWn: $("pWn"), pB: $("pB"), pC: $("pC"), pG: $("pG"), pA: $("pA"), pD: $("pD"), pI: $("pI"), pF: $("pF"), pFA: $("pFA") };
+  pW: $("pW"), pWn: $("pWn"), pB: $("pB"), pC: $("pC"), pG: $("pG"), pA: $("pA"), pD: $("pD"), pT: $("pT"), pI: $("pI"), pF: $("pF"), pFA: $("pFA") };
 let srcBitmap = null, srcURL = null, lastText = "";
 
-const DEFAULTS = { pW: 70, pWn: 70, pB: 0, pC: 0, pG: 100, pA: 100, pD: "fs", pI: false, pF: 11, pFA: true };
+const DEFAULTS = { pW: 70, pWn: 70, pB: 0, pC: 0, pG: 100, pA: 100, pD: "fs", pT: "auto", pI: false, pF: 11, pFA: true };
+// GitHub のコードブロック（.markdown-body pre code）は 1 字幅 / 行送り = 0.5196。
+// 13.6/11.9/10.2/7.65px いずれも、<sub> での縮小後も一定。
+const GITHUB_CELL = 0.5196;
 const darkMQ = matchMedia("(prefers-color-scheme: dark)");
 DEFAULTS.pI = darkMQ.matches;
 let invertTouched = false;
@@ -187,6 +195,7 @@ function bitmapURL(bm) {
 let convertToken = 0;
 async function convert() {
   if (!srcBitmap) return;
+  syncPreviewMetrics();
   const my = ++convertToken;
   const alive = () => my === convertToken;
   let W = Math.floor(+els.pWn.value || +els.pW.value || 70);
@@ -334,17 +343,39 @@ function refreshScreenCap() {
   const w = Math.floor(+els.pWn.value || +els.pW.value || 70);
   els.pW.value = Math.min(cap, Math.max(10, w));
 }
-function cellRatio() {
+// 出力アスペクト = adv / (ph × lh) を合わせるため、プレビューの行送りを選ぶ。
+// 描画アスペクト = W×adv/(H×ph×fs)、H = W×(ih/iw)×cellRatio×asp なので ph = advEm/(cellRatio×asp)。
+function syncPreviewMetrics() {
+  const ph = advEm() / (cellRatio() * ((+els.pA.value || 100) / 100));
+  const v = (isFinite(ph) && ph > 0 ? ph : 1.15).toFixed(4);
+  els.out.style.setProperty("--ph", v);
+  els.vout.style.setProperty("--ph", v);
+}
+function applyPasteTarget() {
+  const gh = els.pT.value === "github";
+  // 貼り付け先セレクタがセル比を決めるので、手動補正は 1.00 に固定（H とプレビュー行送りが
+  // 同時に効いて相殺し、動かしても絵が変わらないため）
+  els.pA.value = DEFAULTS.pA;
+  els.pA.disabled = gh;
+  els.pA.title = gh ? "GitHub のセル比（0.5196）から自動決定" : "";
+  syncPreviewMetrics();
+  syncOutputs();
+  convert();
+}
+function advEm() {
   try {
     const cs = getComputedStyle(els.out);
     const fs = parseFloat(cs.fontSize) || 11;
     fitCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${fs}px ${cs.fontFamily}`;
     const adv = fitCtx.measureText("⣿").width;
-    let lh = parseFloat(cs.lineHeight);
-    if (!isFinite(lh) || lh <= 0) lh = fs * 1.15;
-    if (adv > 0 && lh > 0) return Math.min(1, Math.max(0.3, adv / lh));
+    if (adv > 0) return adv / fs;
   } catch {}
-  return 0.5;
+  return 0.75;
+}
+const BASE_LH = 1.15; // #out / #vout の既定 line-height
+function cellRatio() {
+  if (els.pT.value === "github") return GITHUB_CELL;
+  return Math.min(1, Math.max(0.3, advEm() / BASE_LH));
 }
 
 // ---- sample image ----
@@ -371,6 +402,11 @@ function resetParams() {
   els.pB.value = DEFAULTS.pB; els.pC.value = DEFAULTS.pC;
   els.pG.value = DEFAULTS.pG; els.pA.value = DEFAULTS.pA;
   els.pD.value = DEFAULTS.pD;
+  els.pT.value = DEFAULTS.pT;
+  els.pA.disabled = false;
+  els.pA.title = "";
+  els.out.style.setProperty("--ph", BASE_LH);
+  els.vout.style.setProperty("--ph", BASE_LH);
   invertTouched = false;
   applyThemeInvert();
   els.pF.value = DEFAULTS.pF; els.pFA.checked = DEFAULTS.pFA;
@@ -448,8 +484,9 @@ function syncOutputs(w) {
   $("oF").textContent = els.pFA.checked ? "自動" : els.pF.value + "px";
 }
 for (const k of ["pW","pB","pC","pG","pA"])
-  els[k].addEventListener("input", () => { if (k === "pW") els.pWn.value = els.pW.value; syncOutputs(); convert(); });
+  els[k].addEventListener("input", () => { if (k === "pW") els.pWn.value = els.pW.value; if (k === "pA") syncPreviewMetrics(); syncOutputs(); convert(); });
 els.pWn.addEventListener("change", () => { syncOutputs(); convert(); });
+els.pT.addEventListener("change", () => { els.pT.blur(); applyPasteTarget(); });
 for (const k of ["pD","pI"])
   for (const ev of ["input","change"])
     els[k].addEventListener(ev, () => { syncOutputs(); convert(); });
